@@ -30,9 +30,20 @@ class Prepared:
 
 
 def prepare(settings: Settings, data: FetchResult, tz, now: Optional[datetime] = None) -> Prepared:
-    assignments = sort_assignments(exclude_courses(data.assignments, settings.exclude_courses))
+    if data.term_name is None:
+        raise NoDataError(f"Infinite Campus reports no current term for {data.student_first_name}; nothing written.")
+
+    raw_assignments = list(data.assignments)
+    if not raw_assignments:
+        raise NoDataError(f"Infinite Campus returned no assignments for term {data.term_name}; nothing written.")
+
+    excluded = exclude_courses(raw_assignments, settings.exclude_courses)
+    assignments = sort_assignments(excluded)
+
     if not assignments:
-        raise NoDataError("No assignments after filtering; refusing to overwrite today's tab with empty data.")
+        prefixes = ", ".join(settings.exclude_courses)
+        raise NoDataError(f"All assignments were excluded by TRACKER_EXCLUDE_COURSES ({prefixes}); nothing written.")
+
     counts = summarize_by_class(assignments)
     problems = [a for a in assignments if problem_kind(a)]
     upcoming = upcoming_with_comment(assignments, now or datetime.now(timezone.utc))
@@ -47,38 +58,51 @@ class RunResult:
     recipients: tuple
 
 
+def _email_context(data: FetchResult, prep: Prepared, trend, run_date: date, tz, *,
+                    tab_url: str, tab_title: str, token_days_remaining: Optional[int]) -> EmailContext:
+    """Build EmailContext from fetch result, prepared data, and trend."""
+    return EmailContext(
+        student_name=data.student_first_name, run_date=run_date, trend=trend, problems=prep.problems,
+        tab_url=tab_url, tab_title=tab_title, token_days_remaining=token_days_remaining, tz=tz,
+        grades={g.course: g for g in data.grades}, upcoming=prep.upcoming)
+
+
 def run_report(*, settings: Settings, data: FetchResult, run_date: date, spreadsheet_id: str, sheets, gmail,
-               token_days_remaining: Optional[int]) -> RunResult:
+               token_days_remaining: Optional[int], now: Optional[datetime] = None) -> RunResult:
     """Write the dated tab, update History, then email. The Sheet is written first so the link always works."""
     tz = ZoneInfo(settings.timezone)
-    prep = prepare(settings, data, tz)
+    prep = prepare(settings, data, tz, now=now)
     title = run_date.isoformat()
     gid = sheets.write_tab(spreadsheet_id, title, prep.tab)
     sheets.upsert_history(spreadsheet_id, [HistoryRow.from_counts(run_date, c) for c in prep.counts])
     trend = build_trend(sheets.read_history(spreadsheet_id), run_date)
     url = tab_url(spreadsheet_id, gid)
-    content = render_email(EmailContext(
-        student_name=data.student_first_name, run_date=run_date, trend=trend, problems=prep.problems,
-        tab_url=url, tab_title=title, token_days_remaining=token_days_remaining, tz=tz,
-        grades={g.course: g for g in data.grades}, upcoming=prep.upcoming))
+    content = render_email(_email_context(data, prep, trend, run_date, tz,
+                                          tab_url=url, tab_title=title,
+                                          token_days_remaining=token_days_remaining))
     gmail.send(settings.email_to, settings.email_cc, content.subject, content.text, content.html)
     return RunResult(title, url, len(prep.problems), settings.email_to + settings.email_cc)
 
 
-def write_dry_run(*, settings: Settings, data: FetchResult, run_date: date, out_dir: Path, history=()) -> list:
+def _tsv(rows) -> str:
+    """Convert rows to tab-separated values string."""
+    return "\n".join("\t".join(str(c) for c in row) for row in rows) + "\n"
+
+
+def write_dry_run(*, settings: Settings, data: FetchResult, run_date: date, out_dir: Path, history=(),
+                  now: Optional[datetime] = None) -> list:
     """Render the email and tab rows to files. Today's counts come from `data`; earlier runs from `history`."""
     tz = ZoneInfo(settings.timezone)
-    prep = prepare(settings, data, tz)
+    prep = prepare(settings, data, tz, now=now)
     earlier = [r for r in history if r.run_date != run_date]
     trend = build_trend(earlier + [HistoryRow.from_counts(run_date, c) for c in prep.counts], run_date)
-    content = render_email(EmailContext(
-        student_name=data.student_first_name, run_date=run_date, trend=trend, problems=prep.problems,
-        tab_url="https://docs.google.com/spreadsheets/d/DRY_RUN/edit#gid=0", tab_title=run_date.isoformat(),
-        token_days_remaining=settings.token_ttl_days, tz=tz, grades={g.course: g for g in data.grades},
-        upcoming=prep.upcoming))
+    content = render_email(_email_context(data, prep, trend, run_date, tz,
+                                          tab_url="https://docs.google.com/spreadsheets/d/DRY_RUN/edit#gid=0",
+                                          tab_title=run_date.isoformat(),
+                                          token_days_remaining=settings.token_ttl_days))
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {"email.html": content.html, "email.txt": content.text,
-             "tab.tsv": "\n".join("\t".join(str(c) for c in row) for row in prep.tab.values) + "\n"}
+             "tab.tsv": _tsv(prep.tab.values)}
     paths = []
     for name, text in files.items():
         path = out_dir / name

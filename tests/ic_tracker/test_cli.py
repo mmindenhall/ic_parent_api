@@ -62,3 +62,19 @@ def test_choose_student_rejects_names_not_in_the_list():
     with pytest.raises(ConfigError) as err:
         cli._choose_student(_settings(), "Pat")
     assert "Alex" in str(err.value) and "Sam" in str(err.value)
+
+
+def test_run_now_is_the_real_clock_unless_a_date_is_forced():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    settings = _settings()
+    assert cli._run_now(None, date(2026, 10, 15), settings) is None
+    forced = cli._run_now(date(2026, 10, 15), date(2026, 10, 15), settings)
+    assert forced == datetime(2026, 10, 15, 7, 0, tzinfo=ZoneInfo(settings.timezone))
+
+
+def test_dry_run_help_does_not_claim_no_google_calls():
+    text = cli.build_parser().parse_args(["run"]) and cli.build_parser().format_help()
+    sub = next(a for a in cli.build_parser()._actions if getattr(a, "choices", None) and "run" in a.choices)
+    run_help = sub.choices["run"].format_help()
+    assert "no Google calls" not in run_help and "History" in run_help

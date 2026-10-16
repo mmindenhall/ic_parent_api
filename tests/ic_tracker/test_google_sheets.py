@@ -78,3 +78,86 @@ def test_read_tab_values_and_titles():
     gw = SheetsGateway(svc)
     assert gw.tab_titles("S") == ["2026-10-11"]
     assert gw.read_tab_values("S", "2026-10-11") == [["Class"], ["Math"]]
+
+
+# --- History must survive a failed write ---
+
+class _FailingUpdate(FakeSheetsService):
+    """Raises on values().update for one tab, after real clear/get behaviour."""
+    def __init__(self, fail_on):
+        super().__init__()
+        self.fail_on = fail_on
+
+    def values(self):
+        inner = super().values()
+        outer = self
+
+        class _V:
+            def get(self, **kw):
+                return inner.get(**kw)
+
+            def clear(self, **kw):
+                return inner.clear(**kw)
+
+            def update(self, **kw):
+                if outer.fail_on in kw["range"]:
+                    raise RuntimeError("sheets down")
+                return inner.update(**kw)
+        return _V()
+
+
+def test_failed_history_write_keeps_previous_history():
+    svc = FakeSheetsService()
+    gw = SheetsGateway(svc)
+    d1, d2 = date(2026, 10, 14), date(2026, 10, 15)
+    gw.upsert_history("S", [HistoryRow(d1, "Math", 10, 3, 1)])
+    before = [list(r) for r in svc.rows[HISTORY_TITLE]]
+    svc.fail_on = "History"
+    failing = _FailingUpdate("History")
+    failing.tabs, failing.rows, failing._next = svc.tabs, svc.rows, svc._next
+    try:
+        SheetsGateway(failing).upsert_history("S", [HistoryRow(d2, "Math", 10, 5, 0)])
+    except RuntimeError:
+        pass
+    assert svc.rows[HISTORY_TITLE] == before
+
+
+def test_upsert_history_trims_rows_left_over_from_a_longer_tab():
+    svc = FakeSheetsService([HISTORY_TITLE])
+    svc.rows[HISTORY_TITLE] = [HISTORY_HEADER] + [["2026-10-15", f"Old{i}", 1, 0, 0, 0] for i in range(5)]
+    SheetsGateway(svc).upsert_history("S", [HistoryRow(date(2026, 10, 15), "Math", 10, 2, 0)])
+    assert svc.rows[HISTORY_TITLE] == [HISTORY_HEADER, ["2026-10-15", "Math", 10, 2, 0, 2]]
+
+
+# --- free text must not be interpreted as formulas, numbers or dates ---
+
+def _written(values):
+    svc = FakeSheetsService()
+    SheetsGateway(svc).write_tab("S", "2026-10-15", TabData(values, (), 11, 11))
+    return svc.rows["2026-10-15"]
+
+
+def test_formula_like_and_number_like_text_is_kept_as_text():
+    header = ["Class", "Due Date", "Assignment", "Score (raw)", "Earned", "Possible", "Percent", "Missing", "Zero",
+              "Status", "Comment"]
+    row = ["Math", "2026-10-01", "1/2", "", "", "", "", "", "", "Graded", "=HYPERLINK(\"x\")"]
+    out = _written([header, row])
+    assert out[1][2] == "'1/2"
+    assert out[1][10] == "'=HYPERLINK(\"x\")"
+
+
+def test_plus_minus_at_and_plain_numbers_are_escaped():
+    header = ["h"] * 11
+    row = ["+2 if resubmitted", "2026-10-01", "-5 late", "", "", "", "", "", "", "Graded", "@mention"]
+    out = _written([header, row, ["2024", "2026-10-01", "3.5", "", "", "", "", "", "", "", "3-4"]])
+    assert [out[1][0], out[1][2], out[1][10]] == ["'+2 if resubmitted", "'-5 late", "'@mention"]
+    assert [out[2][0], out[2][2], out[2][10]] == ["'2024", "'3.5", "'3-4"]
+
+
+def test_ordinary_text_dates_numbers_and_header_are_untouched():
+    header = ["Class", "Due Date", "Assignment", "Score (raw)", "Earned", "Possible", "Percent", "Missing", "Zero",
+              "Status", "Comment"]
+    row = ["Math", "2026-10-01", "2.1 Eras Gallery Walk", "3/5(60%)", 3.0, 5.0, 0.6, "Y", "", "Graded", "Nice work"]
+    out = _written([header, row])
+    assert out[0] == header
+    assert out[1] == row

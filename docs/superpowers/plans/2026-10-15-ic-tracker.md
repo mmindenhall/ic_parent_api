@@ -1,5 +1,7 @@
 # ic-tracker Implementation Plan
 
+> **AMENDMENT NOTE:** This is the original implementation plan. Later changes (grades column, teacher comments and upcoming items, TRACKER_STUDENTS, weekday schedule, dry-run reading History) are recorded as amendments in the spec (`docs/superpowers/specs/2026-10-15-ic-tracker-design.md`), which supersedes any conflicting task here.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A daily job that fetches Alex's current-term Infinite Campus assignments, writes a dated tab plus a History row set to a Google Sheet, and emails a trend report.

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from ic_parent_api import InfiniteCampus
@@ -32,7 +32,17 @@ def _float(value) -> Optional[float]:
 
 
 def _dt(value: Optional[str]) -> Optional[datetime]:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        # If the datetime is naive (no timezone), attach UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        logger.warning("Could not parse datetime: %r", value)
+        return None
 
 
 def _status(missing: bool, score_raw: Optional[str], graded: bool) -> str:
@@ -63,6 +73,22 @@ def normalize(a) -> NormalizedAssignment:
         comments=a.comments, feedback=a.feedback)
 
 
+def _parse_date(date_str: Optional[str]) -> Optional[date]:
+    """Parse a date from 'YYYY-MM-DD' or ISO timestamp format.
+
+    For ISO timestamps like '2026-08-19T00:00:00', extract the first 10 chars.
+    Returns None if the string cannot be parsed.
+    """
+    if not date_str:
+        return None
+    try:
+        # Take first 10 chars to handle ISO timestamps
+        date_part = date_str[:10]
+        return date.fromisoformat(date_part)
+    except (ValueError, TypeError):
+        return None
+
+
 def find_student(students, first_name: str):
     wanted = first_name.strip().lower()
     matches = [s for s in students if wanted in (s.firstname.lower(), (s.alias or "").lower())]
@@ -73,13 +99,44 @@ def find_student(students, first_name: str):
 
 
 async def current_term(client, assignments, today: date):
-    """The term that started most recently on or before today, across the student's schedule structures."""
-    today_iso = today.isoformat()
+    """The term that started most recently on or before today, across the student's schedule structures.
+
+    Prefers a term whose [start, end] window contains today. If multiple contain today,
+    picks the latest start date, breaking ties by earliest end date (narrowest span).
+    If no term contains today, falls back to the term with the latest start date.
+    """
     terms = []
     for structure_id in sorted({a.structureid for a in assignments}):
         terms.extend(await client.terms(structure_id))
-    started = [t for t in terms if t.startdate <= today_iso]
-    return max(started, key=lambda t: t.startdate, default=None)
+
+    # Parse dates and skip terms with unparseable dates
+    parsed_terms = []
+    for t in terms:
+        start = _parse_date(t.startdate)
+        end = _parse_date(t.enddate)
+        if start is None:
+            logger.warning("Skipping term %s (%s): unparseable start date %r", t.termid, t.termname, t.startdate)
+            continue
+        if end is None:
+            logger.warning("Skipping term %s (%s): unparseable end date %r", t.termid, t.termname, t.enddate)
+            continue
+        parsed_terms.append((t, start, end))
+
+    # Filter to candidates (started on or before today)
+    candidates = [(t, start, end) for t, start, end in parsed_terms if start <= today]
+
+    if not candidates:
+        return None
+
+    # Separate candidates into those that contain today and those that don't
+    contains_today = [(t, start, end) for t, start, end in candidates if start <= today <= end]
+
+    if contains_today:
+        # Among those containing today, prefer latest start, then earliest end (narrowest)
+        return max(contains_today, key=lambda x: (x[1], -x[2].toordinal()))[0]
+    else:
+        # Fall back to latest start date
+        return max(candidates, key=lambda x: x[1])[0]
 
 
 def class_grades(enrollments, term_id: int) -> list:

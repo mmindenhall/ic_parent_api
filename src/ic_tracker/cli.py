@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="fetch assignments, update the Sheet, send the email")
     run.add_argument("--student", help="first name from TRACKER_STUDENTS (default: the first one listed)")
-    run.add_argument("--dry-run", action="store_true", help="render files only; no Google calls, no email")
+    run.add_argument("--dry-run", action="store_true", help="render files only; writes nothing to Google and sends no email (reads the History tab read-only when possible)")
     run.add_argument("--out", type=Path, help="dry-run output directory")
     run.add_argument("--date", type=_date, help="override the run date (YYYY-MM-DD)")
     sub.add_parser("auth", help="one-time Google consent; renews the cached token")
@@ -61,6 +61,13 @@ def _services(settings: Settings):
     return build_services(get_credentials(settings))
 
 
+def _run_now(forced_date: Optional[date], run_date: date, settings: Settings) -> Optional[datetime]:
+    """The real clock for a normal run; 07:00 local on the forced date for `--date`, so 'upcoming' matches it."""
+    if forced_date is None:
+        return None
+    return datetime.combine(run_date, time(7, 0), tzinfo=ZoneInfo(settings.timezone))
+
+
 def _read_history_if_possible(settings: Settings) -> list:
     """Earlier runs for a dry run's grid. Read-only; any failure means the grid shows today only."""
     from ic_tracker.google.drive import SHEET_MIME, DriveGateway
@@ -86,11 +93,13 @@ def _cmd_run(args) -> int:
     settings = _load_settings()
     settings = _choose_student(settings, args.student)
     run_date = args.date or datetime.now(ZoneInfo(settings.timezone)).date()
+    now = _run_now(args.date, run_date, settings)
     if args.dry_run:
         data = asyncio.run(fetch(settings, run_date))
         out = args.out or settings.cache_dir / "dry-run"
         history = _read_history_if_possible(settings)
-        for path in write_dry_run(settings=settings, data=data, run_date=run_date, out_dir=out, history=history):
+        for path in write_dry_run(settings=settings, data=data, run_date=run_date, out_dir=out, history=history,
+                          now=now):
             print(path)
         return 0
     drive_svc, sheets_svc, gmail_svc = _services(settings)   # fail fast on a missing or expired Google token
@@ -103,7 +112,8 @@ def _cmd_run(args) -> int:
     issued = load_token_issued_at(settings)
     days = token_days_remaining(issued, datetime.now(timezone.utc), settings.token_ttl_days) if issued else None
     result = run_report(settings=settings, data=data, run_date=run_date, spreadsheet_id=sheet["id"],
-                        sheets=SheetsGateway(sheets_svc), gmail=GmailGateway(gmail_svc), token_days_remaining=days)
+                        sheets=SheetsGateway(sheets_svc), gmail=GmailGateway(gmail_svc), token_days_remaining=days,
+                        now=now)
     print(f"Wrote tab {result.tab_title} ({result.needs_attention} need attention); "
           f"emailed {', '.join(result.recipients)}")
     print(result.tab_url)

@@ -1,10 +1,10 @@
 import asyncio
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace as NS
 
 import pytest
 
-from ic_tracker.ic.source import StudentNotFoundError, class_grades, fetch_student_data, find_student, normalize
+from ic_tracker.ic.source import StudentNotFoundError, class_grades, current_term, fetch_student_data, find_student, normalize, _dt
 from ic_tracker.model import ClassGrade
 from ic_tracker.model import STATUS_ABSENT, STATUS_EXCUSED, STATUS_GRADED, STATUS_MISSING, STATUS_NOT_GRADED
 
@@ -50,6 +50,31 @@ def test_ungraded_and_null_flags():
 
 def test_missing_due_date_is_none():
     assert normalize(raw(duedate=None)).due is None
+
+
+def test_dt_handles_z_suffix():
+    result = _dt("2026-09-07T05:59:00.000Z")
+    assert result == datetime(2026, 9, 7, 5, 59, 0, tzinfo=timezone.utc)
+
+
+def test_dt_handles_naive_timestamp_as_utc():
+    result = _dt("2026-10-15T05:59:00")
+    assert result == datetime(2026, 10, 15, 5, 59, 0, tzinfo=timezone.utc)
+    assert result.tzinfo is not None
+
+
+def test_dt_handles_garbage_input_returns_none(caplog):
+    result = _dt("not a date")
+    assert result is None
+    assert "not a date" in caplog.text.lower()
+
+
+def test_dt_handles_empty_string():
+    assert _dt("") is None
+
+
+def test_dt_handles_none():
+    assert _dt(None) is None
 
 
 class FakeClient:
@@ -157,3 +182,66 @@ def test_grade_failure_does_not_block_the_report():
     client = _grade_client(grades_error=RuntimeError("grades endpoint down"))
     result = asyncio.run(fetch_student_data(client, "alex", date(2026, 10, 14)))
     assert result.grades == [] and len(result.assignments) == 1
+
+
+def test_current_term_with_timestamp_formatted_start_date():
+    """Timestamp-formatted start dates work on the start day."""
+    client = FakeClient([], {}, {100: [term(10, "S1", "2026-08-19T00:00:00", "2026-12-18")]})
+    result = asyncio.run(current_term(client, [raw(structureid=100)], date(2026, 8, 19)))
+    assert result.termid == 10
+
+
+def test_current_term_prefers_narrowest_span_for_same_start_date():
+    """Year term and semester term with same start date -> semester (narrowest) chosen."""
+    client = FakeClient(
+        [],
+        {},
+        {100: [
+            term(10, "Full Year", "2026-08-19", "2027-05-27"),  # wider
+            term(20, "S1", "2026-08-19", "2026-12-18"),  # narrower
+        ]}
+    )
+    result = asyncio.run(current_term(client, [raw(structureid=100)], date(2026, 10, 14)))
+    assert result.termid == 20
+
+
+def test_current_term_in_break_between_terms_falls_back_to_latest_start():
+    """Terms S1 (Aug-Dec) and S2 (Jan-May), today in Dec-Jan break -> S1."""
+    client = FakeClient(
+        [],
+        {},
+        {100: [
+            term(10, "S1", "2026-08-19", "2026-12-18"),
+            term(20, "S2", "2027-01-06", "2027-05-27"),
+        ]}
+    )
+    result = asyncio.run(current_term(client, [raw(structureid=100)], date(2026, 12, 20)))
+    assert result.termid == 10
+
+
+def test_current_term_prefers_containing_window():
+    """Today inside S2 -> S2."""
+    client = FakeClient(
+        [],
+        {},
+        {100: [
+            term(10, "S1", "2026-08-19", "2026-12-18"),
+            term(20, "S2", "2027-01-06", "2027-05-27"),
+        ]}
+    )
+    result = asyncio.run(current_term(client, [raw(structureid=100)], date(2027, 2, 15)))
+    assert result.termid == 20
+
+
+def test_current_term_ignores_unparseable_date(caplog):
+    """Unparseable-date term is ignored."""
+    client = FakeClient(
+        [],
+        {},
+        {100: [
+            term(10, "Bad Term", "invalid-date", "2026-12-18"),
+            term(20, "S1", "2026-08-19", "2026-12-18"),
+        ]}
+    )
+    result = asyncio.run(current_term(client, [raw(structureid=100)], date(2026, 10, 14)))
+    assert result.termid == 20

@@ -70,7 +70,9 @@ class FakeSheetsService:
             def update(self, spreadsheetId, range, valueInputOption, body):
                 def run():
                     title, row = outer._parse(range)
-                    outer.rows[title] = outer.rows[title][:row] + [list(r) for r in body["values"]]
+                    new = [list(r) for r in body["values"]]
+                    # like the real API: overwrite only the written rows; rows beyond them stay
+                    outer.rows[title] = outer.rows[title][:row] + new + outer.rows[title][row + len(new):]
                     outer.last_input_option = valueInputOption
                     return {}
                 return _Req(run)

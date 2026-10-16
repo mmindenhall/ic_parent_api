@@ -70,7 +70,7 @@ with Playwright and passes the session cookies to the library (`InfiniteCampus(.
 |---|---|
 | `ic-tracker auth` | One-time Google consent. Caches the token in `~/.cache/ic-tracker/` (mode 600). Re-run it to renew. |
 | `ic-tracker migrate` | Converts `Assignments Tracker.xlsx` in the Drive folder to a Google Sheet and backfills `History`. |
-| `ic-tracker run --dry-run` | Fetches real data and writes `email.html`, `email.txt`, `tab.tsv`. No Google calls, no email. |
+| `ic-tracker run --dry-run` | Fetches real data and writes `email.html`, `email.txt`, `tab.tsv`. Writes nothing to Google and sends no email; if the cached token works, reads the History tab (read-only) so the trend grid matches the real email; on any failure shows today only and prints a note. |
 | `ic-tracker run` | Writes the dated tab and `History`, then sends the email. Safe to rerun on the same day. |
 | `ic-tracker status` | Shows the Google token age and days remaining. |
 
@@ -84,7 +84,7 @@ The email footer shows the days remaining; run `ic-tracker auth` to renew. After
 ### Going live and scheduling
 
 `TRACKER_STUDENTS` lists the students' first names (required). The first is the default for `ic-tracker run`;
-`--student NAME` picks another listed name. The Drive folder defaults to `Kids/<first name>`.
+`--student NAME` picks another listed name. The Drive folder defaults to `Kids/<first name>`. The scheduled launchd job reports only on the first listed student.
 
 While testing, `TRACKER_EMAIL_TO` is the parent only. To go live, set `TRACKER_EMAIL_TO` to the student and
 `TRACKER_EMAIL_CC` to the parents. The tool never changes Drive sharing; share the Sheet in Drive yourself.

@@ -36,10 +36,20 @@ def token_days_remaining(issued_at: datetime, now: datetime, ttl_days: Optional[
 
 def write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        handle.write(text)
-    os.chmod(path, 0o600)
+    temp_path = path.parent / f"{path.name}.tmp"
+    temp_path.unlink(missing_ok=True)   # a stale file from an earlier crash would block O_EXCL
+    try:
+        fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _client_path(settings: Settings) -> Path:
@@ -59,7 +69,12 @@ def _read_json(path: Path) -> Optional[dict]:
 
 def load_token_issued_at(settings: Settings) -> Optional[datetime]:
     data = _read_json(_token_path(settings))
-    return datetime.fromisoformat(data["issued_at"]) if data and "issued_at" in data else None
+    if not data or "issued_at" not in data:
+        return None
+    try:
+        return datetime.fromisoformat(data["issued_at"])
+    except (ValueError, TypeError):
+        return None
 
 
 def read_client_from_1password(settings: Settings, run=subprocess.run) -> dict:
@@ -108,9 +123,19 @@ def authorize(settings: Settings, *, flow_runner=default_flow_runner, op_run=sub
 
 
 def get_credentials(settings: Settings, *, credentials_factory=None, request_factory=None):
-    stored = _read_json(_token_path(settings))
-    if not stored or "authorized_user" not in stored:
+    token_path = _token_path(settings)
+
+    # Check if file exists to distinguish missing from unreadable
+    file_exists = token_path.exists()
+    stored = _read_json(token_path)
+
+    if not file_exists:
         raise AuthExpiredError("No Google token is cached. Run: ic-tracker auth")
+
+    if not stored or "authorized_user" not in stored:
+        raise AuthExpiredError(
+            "The cached Google token is unreadable (invalid JSON or missing fields). Run: ic-tracker auth")
+
     if credentials_factory is None:
         from google.oauth2.credentials import Credentials
 

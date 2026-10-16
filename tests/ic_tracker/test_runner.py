@@ -145,16 +145,69 @@ def test_grades_never_reach_the_sheet_tab():
     assert not any("61.75" in cell or "Today's Grades" in cell for cell in flat)
 
 
+def test_no_current_term_raises_distinct_error():
+    """When term_name is None, raise NoDataError with specific message."""
+    from ic_tracker.ic.source import FetchResult
+    # FetchResult with term_name=None
+    no_term_data = FetchResult("Alex", None, None, None, [make_assignment()], [])
+    with pytest.raises(NoDataError) as exc_info:
+        prepare(settings(), no_term_data, ZoneInfo("America/Denver"))
+    assert "no current term for Alex" in str(exc_info.value)
+    assert "nothing written" in str(exc_info.value)
+
+
+def test_no_assignments_from_ic_raises_distinct_error():
+    """When Infinite Campus returned no assignments, raise NoDataError with specific message."""
+    # FetchResult with term but empty assignments
+    empty_data = FetchResult("Alex", "S1", "2026-08-19", "2026-12-18", [], [])
+    with pytest.raises(NoDataError) as exc_info:
+        prepare(settings(), empty_data, ZoneInfo("America/Denver"))
+    assert "no assignments for term S1" in str(exc_info.value)
+    assert "nothing written" in str(exc_info.value)
+
+
+def test_all_assignments_excluded_raises_distinct_error():
+    """When all assignments are excluded by filters, raise NoDataError with specific message."""
+    # FetchResult with assignments but all in excluded course
+    excluded_data = FetchResult("Alex", "S1", "2026-08-19", "2026-12-18",
+                               [make_assignment(course="Seminar 1")], [])
+    with pytest.raises(NoDataError) as exc_info:
+        prepare(settings(), excluded_data, ZoneInfo("America/Denver"))
+    assert "excluded by TRACKER_EXCLUDE_COURSES" in str(exc_info.value)
+    assert "Seminar" in str(exc_info.value)
+    assert "nothing written" in str(exc_info.value)
+
+
 def test_upcoming_commented_items_reach_the_email_but_not_the_tally():
+    """Upcoming items with comments appear in email; use explicit now for determinism."""
     from datetime import datetime, timedelta, timezone
-    future = datetime.now(timezone.utc) + timedelta(days=5)
-    items = ITEMS + [make_assignment(course="Art", name="Fix quiz", due=future, comments="Redo it")]
+    # Fixed now and due date for determinism
+    now = datetime(2026, 10, 15, 12, 0, 0, tzinfo=timezone.utc)
+    due = now + timedelta(days=5)
+    items = ITEMS + [make_assignment(course="Art", name="Fix quiz", due=due, comments="Redo it")]
     log = []
     gmail = FakeGmail(log)
     result = run_report(settings=settings(), data=data(items), run_date=D, spreadsheet_id="S",
-                        sheets=FakeSheets(log), gmail=gmail, token_days_remaining=5)
+                        sheets=FakeSheets(log), gmail=gmail, token_days_remaining=5, now=now)
     text = gmail.sent[3]
     assert "Fix quiz" in text and "Redo it" in text and result.needs_attention == 2
+
+
+def test_now_parameter_controls_upcoming_visibility():
+    """With now before due date, upcoming item appears; after it, item disappears."""
+    from datetime import datetime, timezone
+    # Fixed due date
+    due = datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
+    item = make_assignment(course="Art", name="Future item", due=due, comments="Comment here")
+
+    # Before due date: item is upcoming
+    now_before = datetime(2026, 10, 15, 12, 0, 0, tzinfo=timezone.utc)
+    result = run_report(settings=settings(), data=data([item]), run_date=D, spreadsheet_id="S",
+                        sheets=FakeSheets([]), gmail=FakeGmail([]), token_days_remaining=5, now=now_before)
+    # After due date: item is not upcoming
+    now_after = datetime(2026, 10, 25, 12, 0, 0, tzinfo=timezone.utc)
+    result2 = run_report(settings=settings(), data=data([item]), run_date=D, spreadsheet_id="S",
+                         sheets=FakeSheets([]), gmail=FakeGmail([]), token_days_remaining=5, now=now_after)
 
 
 def test_dry_run_grid_includes_history_rows_when_given(tmp_path):

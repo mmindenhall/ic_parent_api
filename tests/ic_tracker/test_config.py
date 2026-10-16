@@ -83,3 +83,51 @@ def test_drive_folder_follows_the_selected_student():
 def test_drive_folder_setting_can_be_a_template_or_a_fixed_path():
     assert load_settings({**BASE, "TRACKER_DRIVE_FOLDER": "Family/{student}/Reports"}).drive_folder == "Family/Alex/Reports"
     assert load_settings({**BASE, "TRACKER_DRIVE_FOLDER": "Shared/Reports"}).drive_folder == "Shared/Reports"
+
+
+def test_settings_rejects_empty_students_tuple():
+    from ic_tracker.config import Settings
+    with pytest.raises(ConfigError):
+        Settings(
+            ic_base_url="https://x.infinitecampus.org",
+            ic_username="u",
+            ic_password="p",
+            ic_district="d",
+            email_to=("a@example.com",),
+            students=(),
+            student="Alex"
+        )
+
+
+def test_settings_rejects_student_not_in_students():
+    from ic_tracker.config import Settings
+    with pytest.raises(ConfigError):
+        Settings(
+            ic_base_url="https://x.infinitecampus.org",
+            ic_username="u",
+            ic_password="p",
+            ic_district="d",
+            email_to=("a@example.com",),
+            students=("Alex", "Sam"),
+            student="Jordan"
+        )
+
+
+def test_dataclasses_replace_accepts_valid_student():
+    from dataclasses import replace
+    s = load_settings(BASE)
+    s2 = replace(s, student="Sam")
+    assert s2.student == "Sam"
+    assert s2.students == ("Alex", "Sam")
+
+
+def test_dataclasses_replace_rejects_invalid_student():
+    from dataclasses import replace
+    s = load_settings(BASE)
+    with pytest.raises(ConfigError):
+        replace(s, student="Jordan")
+
+
+def test_password_not_in_repr():
+    s = load_settings({**BASE, "IC_PASSWORD": "p@ssw0rd123"})
+    assert "p@ssw0rd123" not in repr(s)

@@ -139,3 +139,93 @@ def test_get_credentials_refreshes_when_not_valid(settings):
     creds = Ok()
     assert auth.get_credentials(settings, credentials_factory=lambda info: creds, request_factory=object) is creds
     assert creds.refreshed
+
+
+def test_write_private_atomicity(tmp_path):
+    """Temp file is created with 0o600, write succeeds, then atomically replaces target."""
+    path = tmp_path / "target.json"
+    auth.write_private(path, '{"data": "v1"}')
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert path.read_text() == '{"data": "v1"}'
+
+    # Overwrite works
+    auth.write_private(path, '{"data": "v2"}')
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert path.read_text() == '{"data": "v2"}'
+
+    # No temp files left behind
+    temp_files = list(tmp_path.glob("target.json*"))
+    assert len(temp_files) == 1  # Only the final file
+
+
+def test_write_private_cleanup_on_failure(tmp_path):
+    """If write fails, original file is untouched and no temp file remains."""
+    path = tmp_path / "target.json"
+    auth.write_private(path, '{"original": true}')
+    original_content = path.read_text()
+
+    import os as os_module
+    original_replace = os_module.replace
+
+    def failing_replace(src, dst):
+        raise RuntimeError("Simulated failure")
+
+    os_module.replace = failing_replace
+    try:
+        with pytest.raises(RuntimeError, match="Simulated failure"):
+            auth.write_private(path, '{"new": true}')
+    finally:
+        os_module.replace = original_replace
+
+    # Original file untouched
+    assert path.read_text() == original_content
+
+    # No temp files left behind
+    temp_files = [f for f in tmp_path.glob("target.json*") if f != path]
+    assert len(temp_files) == 0
+
+
+def test_load_token_issued_at_returns_none_on_corrupt_issued_at(settings):
+    """Corrupt/unparseable issued_at returns None instead of raising."""
+    # Token with invalid issued_at format
+    auth.write_private(settings.cache_dir / "google_token.json",
+                       json.dumps({"authorized_user": {"refresh_token": "r"}, "issued_at": "not-a-date"}))
+    result = auth.load_token_issued_at(settings)
+    assert result is None
+
+    # Token with numeric issued_at
+    auth.write_private(settings.cache_dir / "google_token.json",
+                       json.dumps({"authorized_user": {"refresh_token": "r"}, "issued_at": 12345}))
+    result = auth.load_token_issued_at(settings)
+    assert result is None
+
+
+def test_get_credentials_missing_file_vs_corrupt(settings):
+    """Distinguish missing token file from unreadable/corrupt file."""
+    # Missing file -> existing message
+    with pytest.raises(auth.AuthExpiredError) as err:
+        auth.get_credentials(settings)
+    assert "No Google token is cached" in str(err.value)
+    assert "ic-tracker auth" in str(err.value)
+
+    # Corrupt JSON (unreadable)
+    auth.write_private(settings.cache_dir / "google_token.json", "{ invalid json }")
+    with pytest.raises(auth.AuthExpiredError) as err:
+        auth.get_credentials(settings)
+    assert "unreadable" in str(err.value).lower()
+    assert "ic-tracker auth" in str(err.value)
+
+    # Missing authorized_user field
+    auth.write_private(settings.cache_dir / "google_token.json", json.dumps({"issued_at": NOW.isoformat()}))
+    with pytest.raises(auth.AuthExpiredError) as err:
+        auth.get_credentials(settings)
+    assert "unreadable" in str(err.value).lower()
+    assert "ic-tracker auth" in str(err.value)
+
+
+def test_write_private_replaces_a_stale_temp_file(tmp_path):
+    from ic_tracker.google.auth import write_private
+    target = tmp_path / "token.json"
+    (tmp_path / "token.json.tmp").write_text("left over from a crash")
+    write_private(target, "fresh")
+    assert target.read_text() == "fresh" and not (tmp_path / "token.json.tmp").exists()

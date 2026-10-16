@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from typing import Optional
 
@@ -17,6 +18,25 @@ _RED = {"red": 0.957, "green": 0.8, "blue": 0.8}
 
 def _quote(title: str) -> str:
     return "'" + title.replace("'", "''") + "'"
+
+
+_FORMULA_START = ("=", "+", "-", "@")
+_NUMBER_OR_DATE_LIKE = re.compile(r"^\s*\d+(?:[./-]\d+)*\s*$")
+_DUE_DATE_COLUMN = 1   # kept as an ISO string so Sheets turns it into a real date
+
+
+def _as_text(value):
+    """Keep free text from being read as a formula, number or date: a leading apostrophe forces text."""
+    if isinstance(value, str) and value and (value.startswith(_FORMULA_START) or _NUMBER_OR_DATE_LIKE.match(value)):
+        return "'" + value
+    return value
+
+
+def _safe_values(values: list) -> list:
+    """Escape text cells of a tab for USER_ENTERED input. The header row and the due-date column are left as is."""
+    return [list(row) if i == 0 else
+            [cell if col == _DUE_DATE_COLUMN else _as_text(cell) for col, cell in enumerate(row)]
+            for i, row in enumerate(values)]
 
 
 def tab_url(spreadsheet_id: str, gid: int) -> str:
@@ -93,7 +113,7 @@ class SheetsGateway:
             gid = self._add_tab(sid, title, index=0)
         self._svc.spreadsheets().values().update(
             spreadsheetId=sid, range=f"{_quote(title)}!A1", valueInputOption="USER_ENTERED",
-            body={"values": tab.values}).execute()
+            body={"values": _safe_values(tab.values)}).execute()
         self._batch(sid, _format_requests(gid, tab, reset=existing))
         return gid
 
@@ -123,6 +143,8 @@ class SheetsGateway:
         merged = sorted(kept + list(new_rows), key=lambda r: (r.run_date, r.course.casefold()))
         values = [HISTORY_HEADER] + [[r.run_date.isoformat(), r.course, r.assignments, r.missing, r.zeros,
                                       r.needs_attention] for r in merged]
-        self._svc.spreadsheets().values().clear(spreadsheetId=sid, range=HISTORY_TITLE, body={}).execute()
+        # Write first, then trim leftover rows, so a failed write never leaves History empty.
         self._svc.spreadsheets().values().update(
             spreadsheetId=sid, range=f"{HISTORY_TITLE}!A1", valueInputOption="RAW", body={"values": values}).execute()
+        self._svc.spreadsheets().values().clear(
+            spreadsheetId=sid, range=f"{HISTORY_TITLE}!A{len(values) + 1}:F", body={}).execute()
