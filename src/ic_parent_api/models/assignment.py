@@ -21,6 +21,7 @@ class Assignment(DataModel):
         self._duedate = assignment_resp.dueDate
         self._assigneddate = assignment_resp.assignedDate
         self._modifieddate = assignment_resp.modifiedDate
+        self._scoremodifieddate = assignment_resp.scoreModifiedDate
         self._coursename = assignment_resp.courseName
         self._active = assignment_resp.active
         self._scoringtype = assignment_resp.scoringType
@@ -124,6 +125,11 @@ class Assignment(DataModel):
     def modifieddate(self) -> Optional[str]:
         """Property Definition."""
         return self._modifieddate
+
+    @property
+    def scoremodifieddate(self) -> Optional[str]:
+        """Property Definition."""
+        return self._scoremodifieddate
 
     @property
     def coursename(self) -> str:

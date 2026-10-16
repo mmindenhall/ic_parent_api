@@ -15,7 +15,7 @@ class ScheduleDayResponse(BaseModel):
     date: str
     requiresAttendance: bool
     isSchoolDay: bool
-    duration: int
+    duration: Optional[int] = None
     trialID: int
 
 
@@ -152,6 +152,7 @@ class AssignmentResponse(BaseModel):
     dueDate: str
     assignedDate: str
     modifiedDate: Optional[str] = None
+    scoreModifiedDate: Optional[str] = None
     courseName: str
     active: bool
     scoringType: Optional[str] = None
@@ -185,3 +186,45 @@ class AssignmentResponse(BaseModel):
     isValidRubric: Optional[bool] = None
     isValidMark: Optional[bool] = None
     includeCampusLearning: Optional[bool] = None
+
+
+class GradingTaskResponse(BaseModel):
+    """One grading task (e.g. '1st 6 Weeks', 'Term Final') of a course.
+
+    score/percent hold a posted grade; progressScore/progressPercent hold the in-progress grade shown
+    on the portal while the task is still open.
+    """
+    taskID: int
+    taskName: str
+    termID: Optional[int] = None
+    sectionID: Optional[int] = None
+    score: Optional[str] = None
+    percent: Optional[float] = None
+    progressScore: Optional[str] = None
+    progressPercent: Optional[float] = None
+    progressPointsEarned: Optional[float] = None
+    progressTotalPoints: Optional[float] = None
+    modifiedDate: Optional[str] = None
+
+
+class GradeCourseResponse(BaseModel):
+    """A course with its grading tasks."""
+    sectionID: int
+    courseName: str
+    dropped: Optional[bool] = False
+    gradingTasks: list[GradingTaskResponse] = []
+
+
+class GradeTermResponse(BaseModel):
+    """A term with the student's graded courses."""
+    termID: int
+    termName: str
+    startDate: str
+    endDate: str
+    courses: list[GradeCourseResponse] = []
+
+
+class GradeEnrollmentResponse(BaseModel):
+    """Grades for one enrollment (school year), by term."""
+    enrollmentID: int
+    terms: list[GradeTermResponse] = []

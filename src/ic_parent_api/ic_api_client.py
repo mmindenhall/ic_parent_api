@@ -7,7 +7,7 @@ import aiohttp
 
 from .errors import InfiniteCampusError
 from .models.base import StudentResponse, CourseResponse, \
-    AssignmentResponse, TermResponse, ScheduleDayResponse
+    AssignmentResponse, TermResponse, ScheduleDayResponse, GradeEnrollmentResponse
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.setLevel(logging.INFO)
@@ -27,6 +27,7 @@ class InfiniteCampusApiClient():
         district,
         path: str = None,
         debug=False,
+        cookies: dict = None,
     ):
         if debug:
             _enable_debug_logging()
@@ -38,6 +39,9 @@ class InfiniteCampusApiClient():
         self._username = username
         self._secret = secret
         self._district = district
+        # Pre-authenticated session cookies (e.g. from an SSO browser login).
+        # When set, verify.jsp login is skipped.
+        self._cookies = cookies
         self._headers = {"Accept": "application/json"}
 
     async def authenticate(self, session):
@@ -53,6 +57,9 @@ class InfiniteCampusApiClient():
             async with session.post(request_url) as authresponse:
                 response = authresponse
                 responsetext = await response.text()
+                if "samlLoginThruCampus" in responsetext:
+                    raise InfiniteCampusError(
+                        400, "District requires SSO login; pass session cookies via cookies=")
                 if response.status == 200 and "password-error" not in responsetext:
                     return True
                 raise InfiniteCampusError(400, "Bad Credentials")
@@ -62,8 +69,8 @@ class InfiniteCampusApiClient():
     async def _get_request(self, end_url: str):
         """Perform GET request to API endpoint."""
         request_url = urljoin(self._base_url, end_url)
-        async with aiohttp.ClientSession() as session:
-            authenticated = await self.authenticate(session)
+        async with aiohttp.ClientSession(cookies=self._cookies) as session:
+            authenticated = True if self._cookies else await self.authenticate(session)
             if authenticated:
                 async with session.get(f"{request_url}", headers=self._headers) as resp:
                     response = resp
@@ -104,9 +111,9 @@ class InfiniteCampusApiClient():
             return [AssignmentResponse(**resp) for resp in parsed_response]
         return []
 
-    async def get_terms(self) -> list[TermResponse]:
-        """Get Infinite Campus Courses."""
-        parsed_response = await self._get_request("/campus/resources/term?structureID=1210")
+    async def get_terms(self, structure_id: int = 1210) -> list[TermResponse]:
+        """Get Infinite Campus Terms for a schedule structure."""
+        parsed_response = await self._get_request(f"/campus/resources/term?structureID={structure_id}")
         if parsed_response:
             return [TermResponse(**resp) for resp in parsed_response]
         return []
@@ -118,4 +125,11 @@ class InfiniteCampusApiClient():
         )
         if parsed_response:
             return [ScheduleDayResponse(**resp) for resp in parsed_response]
+        return []
+
+    async def get_grades(self, student_id: int) -> list[GradeEnrollmentResponse]:
+        """Get Infinite Campus grades (per enrollment, term, course and grading task)."""
+        parsed_response = await self._get_request(f"/campus/resources/portal/grades?personID={student_id}")
+        if parsed_response:
+            return [GradeEnrollmentResponse(**resp) for resp in parsed_response]
         return []

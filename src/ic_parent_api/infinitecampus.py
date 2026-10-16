@@ -6,6 +6,7 @@ from .models.course import Course
 from .models.assignment import Assignment
 from .models.term import Term
 from .ic_api_client import InfiniteCampusApiClient
+from .models.base import GradeEnrollmentResponse
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.setLevel(logging.INFO)
@@ -21,8 +22,10 @@ class InfiniteCampus():
         district,
         path: str = None,
         debug=False,
+        cookies: dict = None,
     ):
-        self._api_client = InfiniteCampusApiClient(base_url, username, secret, district, path, debug)
+        self._api_client = InfiniteCampusApiClient(
+            base_url, username, secret, district, path, debug, cookies)
 
         if debug:
             _LOGGER.setLevel(logging.DEBUG)
@@ -50,8 +53,12 @@ class InfiniteCampus():
         assignments = [Assignment(response) for response in assignmentsresp]
         return assignments
 
-    async def terms(self) -> list[Term]:
-        """Get Terms."""
-        termsresp = await self._api_client.get_terms()
+    async def terms(self, structure_id: int = 1210) -> list[Term]:
+        """Get Terms for a schedule structure (a student's enrollment/assignments carry structureID)."""
+        termsresp = await self._api_client.get_terms(structure_id)
         terms = [Term(response) for response in termsresp]
         return terms
+
+    async def grades(self, student_id) -> list[GradeEnrollmentResponse]:
+        """Get Grades: must supply student id. Returns the response models (enrollment > term > course > task)."""
+        return await self._api_client.get_grades(student_id)

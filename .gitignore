@@ -1,5 +1,4 @@
 venv/
-tests/
 dist/
 src/ic_parent_api.egg-info/
 ic_parent_api.code-workspace
@@ -8,3 +7,8 @@ src/ic_parent_api/__pycache__/
 src/ic_parent_api/errors/__pycache__/
 src/ic_parent_api/models/__pycache__/
 .tox/
+
+.env
+__pycache__/
+*.pyc
+.pytest_cache/

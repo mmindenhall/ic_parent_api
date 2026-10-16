@@ -7,7 +7,7 @@ Adapted from pygrocy (https://github.com/SebRut/pygrocy).
 class InfiniteCampusError(Exception):
     def __init__(self, response: int, text: str):
         self._status = response
-        self._text = text
+        self._text = str(text)
 
         if len(self._text) > 0:
             self._message = self._text
